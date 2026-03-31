@@ -117,9 +117,9 @@ class apb_xtn extends uvm_sequence_item;//======================================
     bit PSLVERR;
     bit IRQ;
 
-    bit dl_access; /////////////////////////////////////////////why we need this?
-    bit data_in_thr; /////////////////////////////////////////////why we need this?
-    bit data_in_rhr; /////////////////////////////////////////////why we need this?
+    bit dl_access; 
+    bit data_in_thr; 
+    bit data_in_rhr; 
     bit[7:0] lcr;
     bit[7:0] ier;
     bit[7:0] fcr;
@@ -129,6 +129,7 @@ class apb_xtn extends uvm_sequence_item;//======================================
     bit[7:0] iir;
     bit[7:0] lsr;
 
+   constraint data_range{ PWDATA inside {[0:255]};} // constraint to restrict the data value to 8 bits as we are using 8 bit data width in our design
 
     function void do_print(uvm_printer printer);
         printer.print_field("Penable", this.PENABLE, 1, UVM_DEC);
@@ -139,6 +140,16 @@ class apb_xtn extends uvm_sequence_item;//======================================
         printer.print_field("PRdata", this.PRDATA, 32, UVM_DEC);
         printer.print_field("Pready", this.PREADY, 1,UVM_DEC);
         printer.print_field("Pwrite", this.PWRITE, 1, UVM_DEC);
+        printer.print_field("PSLVERR", this.PSLVERR, 1, UVM_DEC);
+
+        printer.print_field("LCR", this.lcr, 8, UVM_BIN);
+        printer.print_field("IER", this.ier, 8, UVM_BIN);
+        printer.print_field("FCR", this.fcr, 8, UVM_BIN);
+        printer.print_field("DIV", this.div, 16, UVM_DEC);
+        printer.print_field("THR", this.thr[thr.size()-1], 8, UVM_DEC); // printing the last value in thr array
+        printer.print_field("RHR", this.rhr[rhr.size()-1], 8, UVM_DEC); // printing the last value in rhr array
+        printer.print_field("IIR", this.iir, 8, UVM_BIN);
+        printer.print_field("LSR", this.lsr, 8, UVM_BIN);
     endfunction
 
 
@@ -176,7 +187,7 @@ class apb_xtn extends uvm_sequence_item;//======================================
 endclass
 
 
-class apb_conf extends uvm_object; //------------------------------------------------------------------->
+class apb_conf extends uvm_object; 
         `uvm_object_utils(apb_conf)
 
         function new(string name = "");
@@ -605,6 +616,8 @@ class apb_drv extends uvm_driver#(apb_xtn);//------------------------------>>
 
                 forever begin
                         seq_item_port.get_next_item(req);
+                        `uvm_info("APB_DRV", "\nReceived a transaction from sequence", UVM_MEDIUM)
+                        req.print();
                         drive(req);
                         seq_item_port.item_done();
                 end
@@ -666,6 +679,11 @@ class apb_mon extends uvm_monitor;//------------------------------>>
                         `uvm_fatal("APB_MON", "Failed to get APB configuration")
         endfunction
 
+        function void connect_phase(uvm_phase phase);
+                super.connect_phase(phase);
+                vif = apb_conf_h.vif;
+        endfunction
+
         task run_phase(uvm_phase phase);
                 forever begin
                         collect();
@@ -677,7 +695,7 @@ class apb_mon extends uvm_monitor;//------------------------------>>
            xtn = apb_xtn::type_id::create("xtn");
 
            @(vif.apb_mon_cb);
-                while( !vif.apb_mon_cb.PENABLE == 1)         // wait for access phase to start
+                while( vif.apb_mon_cb.PENABLE != 1)         // wait for access phase to start
                         @(vif.apb_mon_cb);
                       @(vif.apb_mon_cb);
                 begin
@@ -742,6 +760,8 @@ class apb_mon extends uvm_monitor;//------------------------------>>
                         
                                 end
                         mon_port.write(xtn);
+                        `uvm_info("APB_MON", "\nSampling is done. Transaction written to port", UVM_MEDIUM)
+                        xtn.print();
                 end
         endtask
 endclass
@@ -768,6 +788,11 @@ class apb_agent extends uvm_agent;
                 apb_drv_h = apb_drv::type_id::create("apb_drv_h",this);
                 apb_mon_h = apb_mon::type_id::create("apb_mon_h",this);
                 apb_seqr_h = apb_seqr::type_id::create("apb_seqr_h",this);
+        endfunction
+
+        function void connect_phase(uvm_phase phase);
+                super.connect_phase(phase);
+                apb_drv_h.seq_item_port.connect(apb_seqr_h.seq_item_export);
         endfunction
 endclass
 
@@ -928,6 +953,7 @@ class test extends uvm_test;
          apb_conf cfg;
         env envh;
         vseq vseqh;
+        apb_half_duplex_seq half_duplex_h;
 
         function new(string name = "",uvm_component parent);
                 super.new(name,parent);
@@ -938,6 +964,8 @@ class test extends uvm_test;
                 envh= env::type_id::create("envh",this);
                 vseqh = vseq::type_id::create("vseqh");
                 cfg = apb_conf::type_id::create("cfg");
+                half_duplex_h = apb_half_duplex_seq::type_id::create("half_duplex_h");
+
                 if(!uvm_config_db#(virtual apb_if)::get(this,"", "vif", cfg.vif))
                         `uvm_fatal("TEST", "Failed to get APB interface from config DB");
                 uvm_config_db#(apb_conf)::set(this, "*", "apb_conf", cfg);
@@ -946,6 +974,15 @@ class test extends uvm_test;
         function void end_of_elaboration_phase(uvm_phase phase);
                 uvm_top.print_topology();
         endfunction
+
+        task run_phase(uvm_phase phase);
+                super.run_phase(phase);
+              //  vseqh.start(vseqrh);
+                phase.raise_objection(this);
+                half_duplex_h.start(envh.apb_agent_top_h.apb_agent_h.apb_seqr_h);
+                #87000;
+                phase.drop_objection(this);
+        endtask
 endclass
 
 module top;//---------------------------------------------------------------->
@@ -956,7 +993,24 @@ module top;//---------------------------------------------------------------->
         int baud_cnt;
         bit PRESETn;
         apb_if apb_if_inst(clk1);
-        uart_if uart_if_inst();
+        uart_if uart_if_inst(clk2);
+
+          uart_16550 dut (
+    .PCLK    (clk1),
+    .PRESETn (apb_if_inst.PRESETn),
+    .PADDR   (apb_if_inst.PADDR),
+    .PWDATA  (apb_if_inst.PWDATA),
+    .PRDATA  (apb_if_inst.PRDATA),
+    .PWRITE  (apb_if_inst.PWRITE),
+    .PENABLE (apb_if_inst.PENABLE),
+    .PSEL    (apb_if_inst.PSEL),
+    .PREADY  (apb_if_inst.PREADY),
+    .PSLVERR (apb_if_inst.PSLVERR),
+    .IRQ     (apb_if_inst.IRQ),
+    .TXD     (uart_if_inst.TXD),
+    .RXD     (uart_if_inst.RXD),
+    .baud_o  ()
+    );
 
         always #5 clk1 = ~clk1;    //100MHz clock for APB
         always #10 clk2 = ~clk2;   //50MHz clock for UART
@@ -977,6 +1031,9 @@ module top;//---------------------------------------------------------------->
                 PRESETn = 0;
                 #100 PRESETn = 1;
         end
+
+        assign apb_if_inst.PRESETn = PRESETn;
+        assign uart_if_inst.Presetn = PRESETn;
 
         //GENERATE baud tick FOR UART VIP       
         always @(posedge clk2 or negedge PRESETn) begin
